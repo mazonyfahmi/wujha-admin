@@ -149,11 +149,7 @@ deploy_application() {
     cd "$SCRIPT_DIR"
     
     # Pull latest code (if git repo)
-    if [ -d .git ]; then
-        log_info "Pulling latest code from Git..."
-        git fetch origin
-        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
-    fi
+    pull_code
     
     install_dependencies
     

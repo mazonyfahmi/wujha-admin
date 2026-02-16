@@ -273,6 +273,11 @@ main() {
     setup_database
     update_env_credentials
     
+    # Admin User Setup
+    generate_admin_credentials
+    seed_admin_user
+    
+    
     setup_laravel
     setup_nginx
     setup_php_fpm
@@ -349,6 +354,31 @@ update_env_credentials() {
     log_success ".env updated with database credentials"
 }
 
+#=============================================================================
+# Admin User Configuration
+#=============================================================================
+
+ADMIN_EMAIL="admin@wujha.com"
+ADMIN_PASS=""
+
+generate_admin_credentials() {
+    log_info "Generating admin user credentials..."
+    # Generate a random 12-character password
+    ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 12)
+    log_success "Admin credentials generated"
+}
+
+seed_admin_user() {
+    log_info "Seeding admin user..."
+    
+    cd "${APP_PATH}"
+    
+    # Run the AdminUserSeeder with environment variables
+    ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASS}" php artisan db:seed --class=AdminUserSeeder --force
+    
+    log_success "Admin user seeded"
+}
+
 display_credentials() {
     echo ""
     echo -e "${GREEN}================================================================${NC}"
@@ -358,6 +388,9 @@ display_credentials() {
     echo -e "Database Name:  ${BLUE}${DB_NAME}${NC}"
     echo -e "Database User:  ${BLUE}${DB_USER}${NC}"
     echo -e "Database Pass:  ${BLUE}${DB_PASS}${NC}"
+    echo ""
+    echo -e "Admin Email:    ${BLUE}${ADMIN_EMAIL}${NC}"
+    echo -e "Admin Pass:     ${BLUE}${ADMIN_PASS}${NC}"
     echo ""
     echo -e "App URL:        ${BLUE}http://${DOMAIN}${NC}"
     echo ""
