@@ -54,6 +54,32 @@ setup_env() {
     log_success "Environment file configured!"
 }
 
+setup_laravel() {
+    log_info "Running Laravel setup commands..."
+    
+    cd "${APP_PATH}"
+    
+    # Storage link
+    if [ ! -L "${APP_PATH}/public/storage" ]; then
+        php artisan storage:link
+        log_info "Storage linked"
+    fi
+    
+    # Migrations
+    log_info "Running migrations..."
+    php artisan migrate --force
+    
+    # Optimization
+    log_info "Optimizing caches..."
+    php artisan optimize:clear
+    php artisan optimize
+    php artisan view:cache
+    php artisan config:cache
+    php artisan route:cache
+    
+    log_success "Laravel configured!"
+}
+
 #=============================================================================
 # Directory Permissions
 #=============================================================================
@@ -91,6 +117,17 @@ setup_nginx() {
     
     NGINX_CONF="/etc/nginx/sites-available/${APP_NAME}"
     
+    # Detect PHP-FPM socket
+    if [ -f "/run/php/php${PHP_VERSION}-fpm.sock" ]; then
+        PHP_SOCKET="unix:/run/php/php${PHP_VERSION}-fpm.sock"
+    elif [ -f "/var/run/php/php${PHP_VERSION}-fpm.sock" ]; then
+         PHP_SOCKET="unix:/var/run/php/php${PHP_VERSION}-fpm.sock"
+    elif [ -f "/run/php-fpm/www.sock" ]; then
+        PHP_SOCKET="unix:/run/php-fpm/www.sock" # RHEL/CentOS
+    else
+        PHP_SOCKET="unix:/var/run/php/php${PHP_VERSION}-fpm.sock" # Default fallback
+    fi
+
     cat > "$NGINX_CONF" << EOF
 server {
     listen 80;
@@ -122,7 +159,7 @@ server {
     error_page 404 /index.php;
 
     location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;
+        fastcgi_pass ${PHP_SOCKET};
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
         fastcgi_hide_header X-Powered-By;
@@ -230,12 +267,103 @@ main() {
     
     setup_env
     setup_permissions
+    
+    # Database Setup
+    generate_credentials
+    setup_database
+    update_env_credentials
+    
+    setup_laravel
     setup_nginx
     setup_php_fpm
     setup_supervisor
     setup_cron
     
     log_success "Configuration completed successfully!"
+    display_credentials
+}
+
+#=============================================================================
+# Database Configuration
+#=============================================================================
+
+DB_NAME="wujha_admin"
+DB_USER="wujha_user"
+DB_PASS=""
+
+generate_credentials() {
+    log_info "Generating database credentials..."
+    # Generate a random 32-character password
+    DB_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
+    log_success "Credentials generated"
+}
+
+setup_database() {
+    log_info "Setting up MySQL database..."
+    
+    # Check if mysql is available
+    if ! command -v mysql &> /dev/null; then
+        log_warning "MySQL client not found, skipping database creation"
+        return
+    fi
+    
+    # Create DB and User (Idempotent)
+    mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
+    mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';";
+    # If user exists, update password
+    mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+    mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+    mysql -e "FLUSH PRIVILEGES;"
+    
+    log_success "Database ${DB_NAME} and user ${DB_USER} configured"
+}
+
+update_env_credentials() {
+    log_info "Updating .env with new credentials..."
+    
+    cd "${APP_PATH}"
+    
+    # Update DB_DATABASE
+    if grep -q "^DB_DATABASE=" .env; then
+        sed -i "s/^DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
+    else
+        echo "DB_DATABASE=${DB_NAME}" >> .env
+    fi
+    
+    # Update DB_USERNAME
+    if grep -q "^DB_USERNAME=" .env; then
+        sed -i "s/^DB_USERNAME=.*/DB_USERNAME=${DB_USER}/" .env
+    else
+        echo "DB_USERNAME=${DB_USER}" >> .env
+    fi
+    
+    # Update DB_PASSWORD
+    if grep -q "^DB_PASSWORD=" .env; then
+        # Escape special characters in password for sed
+        ESCAPED_PASS=$(echo "${DB_PASS}" | sed 's/[\/&]/\\&/g')
+        sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=${ESCAPED_PASS}/" .env
+    else
+        echo "DB_PASSWORD=${DB_PASS}" >> .env
+    fi
+    
+    log_success ".env updated with database credentials"
+}
+
+display_credentials() {
+    echo ""
+    echo -e "${GREEN}================================================================${NC}"
+    echo -e "${GREEN}   INSTALLATION COMPLETE - SAVE THESE CREDENTIALS   ${NC}"
+    echo -e "${GREEN}================================================================${NC}"
+    echo ""
+    echo -e "Database Name:  ${BLUE}${DB_NAME}${NC}"
+    echo -e "Database User:  ${BLUE}${DB_USER}${NC}"
+    echo -e "Database Pass:  ${BLUE}${DB_PASS}${NC}"
+    echo ""
+    echo -e "App URL:        ${BLUE}http://${DOMAIN}${NC}"
+    echo ""
+    echo -e "${YELLOW}NOTE: These credentials have been saved to ${APP_PATH}/.env${NC}"
+    echo -e "${GREEN}================================================================${NC}"
+    echo ""
 }
 
 main

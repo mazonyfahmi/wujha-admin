@@ -90,6 +90,13 @@ install_apt() {
     # Install Certbot for SSL
     log_info "Installing Certbot..."
     apt install -y certbot python3-certbot-nginx
+
+    # Install MySQL and Redis Server
+    log_info "Installing MySQL and Redis Server..."
+    apt install -y mysql-server redis-server
+
+    # Start Services
+    systemctl enable --now mysql redis-server
     
     log_success "APT packages installed successfully!"
 }
@@ -155,10 +162,17 @@ install_dnf() {
     log_info "Installing Certbot..."
     dnf install -y certbot python3-certbot-nginx
     
-    # Enable and start services
-    systemctl enable nginx php-fpm supervisord
-    systemctl start nginx php-fpm supervisord
+    # Install MySQL and Redis Server
+    log_info "Installing MySQL and Redis Server..."
+    dnf install -y mysql-server redis
+
+    # Start and Enable Services
+    log_info "Starting services..."
+    systemctl enable --now mysqld redis nginx php-fpm supervisord
     
+    # Secure MySQL installation (optional, automated approach)
+    # mysql_secure_installation_automated 
+
     log_success "DNF packages installed successfully!"
 }
 

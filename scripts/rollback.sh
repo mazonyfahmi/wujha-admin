@@ -143,7 +143,7 @@ restore_storage() {
     fi
     
     # Extract storage backup
-    tar -xzf "$storage_file" -C "${APP_PATH}/storage/app"
+    tar -xzf "$storage_file" -C "${APP_PATH}/storage"
     
     log_success "Storage files restored"
 }
@@ -188,6 +188,10 @@ rebuild_application() {
     # Clear caches
     php artisan optimize:clear
     php artisan optimize
+    
+    # Restore links and DB state
+    php artisan storage:link
+    php artisan migrate --force
     
     # Set permissions
     chown -R www-data:www-data "${APP_PATH}" 2>/dev/null || true

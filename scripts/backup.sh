@@ -90,9 +90,9 @@ backup_database() {
 backup_storage() {
     log_info "Backing up storage files..."
     
-    if [ -d "${APP_PATH}/storage/app/public" ]; then
+    if [ -d "${APP_PATH}/storage/app" ]; then
         tar -czf "${BACKUP_DIR}/${BACKUP_NAME}/storage.tar.gz" \
-            -C "${APP_PATH}/storage/app" public 2>/dev/null || true
+            -C "${APP_PATH}/storage" app 2>/dev/null || true
         log_success "Storage files backed up"
     else
         log_warning "No storage files to backup"
