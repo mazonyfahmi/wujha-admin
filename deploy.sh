@@ -22,6 +22,7 @@ SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
 APP_NAME="wujha-admin"
 PHP_VERSION="8.2"
 NODE_VERSION="20"
+export COMPOSER_ALLOW_SUPERUSER=1
 
 #=============================================================================
 # Helper Functions
@@ -63,7 +64,7 @@ detect_os() {
         *)
             log_error "Unsupported OS: $OS"
             exit 1
-            ;;
+        ;;
     esac
     
     log_info "Detected OS: $OS $VERSION (Package Manager: $PKG_MANAGER)"
@@ -72,6 +73,23 @@ detect_os() {
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         log_error "Please run as root or with sudo"
+        echo "Usage: sudo ./deploy.sh [OPTIONS]"
+        exit 1
+    fi
+}
+
+check_dependencies() {
+    local missing=0
+    for cmd in php composer npm node git; do
+        if ! command -v $cmd &> /dev/null; then
+            log_error "$cmd command not found"
+            missing=1
+        fi
+    done
+    
+    if [ $missing -eq 1 ]; then
+        log_error "Missing dependencies. If this is a new server, run with --install first."
+        log_info "Usage: sudo ./deploy.sh --install"
         exit 1
     fi
 }
@@ -97,27 +115,9 @@ run_install() {
     fi
 }
 
-run_configure() {
-    log_info "Running configuration script..."
-    if [ -f "${SCRIPTS_DIR}/configure.sh" ]; then
-        bash "${SCRIPTS_DIR}/configure.sh"
-    else
-        log_error "configure.sh not found in ${SCRIPTS_DIR}"
-        exit 1
-    fi
-}
-
-deploy_application() {
-    log_info "Deploying application..."
-    
+install_dependencies() {
+    log_info "Installing application dependencies..."
     cd "$SCRIPT_DIR"
-    
-    # Pull latest code (if git repo)
-    if [ -d .git ]; then
-        log_info "Pulling latest code from Git..."
-        git fetch origin
-        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
-    fi
     
     # Install PHP dependencies
     log_info "Installing Composer dependencies..."
@@ -129,6 +129,33 @@ deploy_application() {
     
     log_info "Building frontend assets..."
     npm run build
+}
+
+run_configure() {
+    log_info "Running configuration script..."
+    if [ -f "${SCRIPTS_DIR}/configure.sh" ]; then
+        bash "${SCRIPTS_DIR}/configure.sh"
+    else
+        log_error "configure.sh not found in ${SCRIPTS_DIR}"
+        exit 1
+    fi
+}
+
+deploy_application() {
+    check_dependencies
+    
+    log_info "Deploying application..."
+    
+    cd "$SCRIPT_DIR"
+    
+    # Pull latest code (if git repo)
+    if [ -d .git ]; then
+        log_info "Pulling latest code from Git..."
+        git fetch origin
+        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
+    fi
+    
+    install_dependencies
     
     # Laravel optimizations
     log_info "Running Laravel optimizations..."
@@ -170,6 +197,7 @@ deploy_application() {
     log_success "Deployment completed successfully!"
 }
 
+
 show_help() {
     echo "Usage: ./deploy.sh [OPTIONS]"
     echo ""
@@ -203,6 +231,7 @@ main() {
         --install)
             check_root
             run_install
+            install_dependencies
             run_configure
             deploy_application
             ;;
@@ -225,6 +254,7 @@ main() {
             show_help
             ;;
         deploy|*)
+            check_root
             run_backup
             deploy_application
             ;;
