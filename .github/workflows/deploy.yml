@@ -18,7 +18,7 @@ on:
 
 env:
   APP_NAME: wujha-admin
-  PHP_VERSION: '8.2'
+  PHP_VERSION: '8.4'
   NODE_VERSION: '20'
 
 jobs:
@@ -61,7 +61,7 @@ jobs:
         run: composer install --no-dev --optimize-autoloader --no-interaction
 
       - name: Install NPM dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build frontend assets
         run: npm run build
@@ -130,7 +130,11 @@ jobs:
             cd ${DEPLOY_PATH}
             
             # Set permissions
-            sudo chown -R www-data:www-data .
+            # Fix home directory permissions for Nginx
+            sudo chmod 755 $(dirname ${DEPLOY_PATH})
+            
+            # Set ownership: deploy user owns files, www-data group for web access
+            sudo chown -R ${SSH_USER}:www-data .
             sudo chmod -R 755 .
             sudo chmod -R 775 storage bootstrap/cache
             
@@ -144,7 +148,7 @@ jobs:
             php artisan migrate --force
             
             # Restart services
-            sudo systemctl restart php8.2-fpm || sudo systemctl restart php-fpm
+            sudo systemctl restart php8.4-fpm || sudo systemctl restart php-fpm
             sudo systemctl reload nginx
             
             # Restart queue workers
