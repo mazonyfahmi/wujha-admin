@@ -145,6 +145,20 @@ deploy_application() {
     php artisan optimize:clear
     php artisan optimize
     
+    # Storage link
+    if [ ! -L "${SCRIPT_DIR}/public/storage" ]; then
+        log_info "Linking storage..."
+        php artisan storage:link
+    fi
+    
+    # Fix permissions
+    log_info "Fixing permissions..."
+    chown -R ${WEB_USER:-www-data}:${WEB_USER:-www-data} "${SCRIPT_DIR}"
+    find "${SCRIPT_DIR}" -type f -exec chmod 644 {} \;
+    find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \;
+    chmod -R 775 "${SCRIPT_DIR}/storage" "${SCRIPT_DIR}/bootstrap/cache"
+    chmod +x "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/scripts/"*.sh
+    
     # Restart services
     log_info "Restarting services..."
     if command -v systemctl &> /dev/null; then
