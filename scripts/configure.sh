@@ -24,8 +24,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PATH="${SCRIPT_DIR}"
 APP_NAME="wujha-admin"
 DOMAIN="${DOMAIN:-localhost}"
-WEB_USER="${WEB_USER:-www-data}"
 PHP_VERSION="8.4"
+
+# Detect actual user (passed from deploy.sh or fallback)
+ACTUAL_USER="${ACTUAL_USER:-${SUDO_USER:-$(whoami)}}"
+WEB_GROUP="www-data"
 
 #=============================================================================
 # Environment Setup
@@ -51,8 +54,135 @@ setup_env() {
         php artisan key:generate --force
     fi
     
+    # Set APP_ENV to production
+    sed -i "s/^APP_ENV=.*/APP_ENV=production/" .env
+    sed -i "s/^APP_DEBUG=.*/APP_DEBUG=false/" .env
+    
     log_success "Environment file configured!"
 }
+
+#=============================================================================
+# Directory Permissions
+#=============================================================================
+
+setup_permissions() {
+    log_info "Setting directory permissions..."
+    
+    cd "${APP_PATH}"
+    
+    # Ensure Nginx can traverse the home directory (common issue on Ubuntu)
+    local home_dir=$(dirname "${APP_PATH}")
+    chmod 755 "${home_dir}" 2>/dev/null || true
+    
+    # Set ownership: actual user owns files, www-data group for web server
+    chown -R ${ACTUAL_USER}:${WEB_GROUP} "${APP_PATH}"
+    
+    # Set directory permissions
+    find "${APP_PATH}" -type d -exec chmod 755 {} \;
+    
+    # Set file permissions
+    find "${APP_PATH}" -type f -exec chmod 644 {} \;
+    
+    # Make storage and cache writable by both user and www-data
+    chmod -R 775 "${APP_PATH}/storage"
+    chmod -R 775 "${APP_PATH}/bootstrap/cache"
+    
+    # Ensure artisan and scripts are executable
+    chmod +x "${APP_PATH}/artisan" 2>/dev/null || true
+    chmod +x "${APP_PATH}/deploy.sh" 2>/dev/null || true
+    find "${APP_PATH}/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    
+    log_success "Permissions configured!"
+}
+
+#=============================================================================
+# Database Configuration
+#=============================================================================
+
+DB_NAME="wujha_admin"
+DB_USER="wujha_user"
+DB_PASS=""
+
+generate_credentials() {
+    log_info "Generating database credentials..."
+    DB_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
+    log_success "Credentials generated"
+}
+
+setup_database() {
+    log_info "Setting up MySQL database..."
+    
+    if ! command -v mysql &> /dev/null; then
+        log_warning "MySQL client not found, skipping database creation"
+        return
+    fi
+    
+    # Create DB and User (Idempotent)
+    mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
+    mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+    mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+    mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+    mysql -e "FLUSH PRIVILEGES;"
+    
+    log_success "Database ${DB_NAME} and user ${DB_USER} configured"
+}
+
+update_env_credentials() {
+    log_info "Updating .env with database credentials..."
+    
+    cd "${APP_PATH}"
+    
+    # Helper function to update or add .env variable
+    update_env_var() {
+        local key="$1"
+        local value="$2"
+        if grep -q "^${key}=" .env; then
+            # Escape special characters for sed
+            local escaped_value=$(echo "${value}" | sed 's/[\/&]/\\&/g')
+            sed -i "s/^${key}=.*/${key}=${escaped_value}/" .env
+        else
+            echo "${key}=${value}" >> .env
+        fi
+    }
+    
+    # Update all DB connection settings
+    update_env_var "DB_CONNECTION" "mysql"
+    update_env_var "DB_HOST" "127.0.0.1"
+    update_env_var "DB_PORT" "3306"
+    update_env_var "DB_DATABASE" "${DB_NAME}"
+    update_env_var "DB_USERNAME" "${DB_USER}"
+    update_env_var "DB_PASSWORD" "${DB_PASS}"
+    
+    log_success ".env updated with database credentials"
+}
+
+#=============================================================================
+# Admin User Configuration
+#=============================================================================
+
+ADMIN_EMAIL="admin@wujha.com"
+ADMIN_PASS=""
+
+generate_admin_credentials() {
+    log_info "Generating admin user credentials..."
+    ADMIN_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    log_success "Admin credentials generated"
+}
+
+seed_admin_user() {
+    log_info "Seeding admin user..."
+    
+    cd "${APP_PATH}"
+    
+    ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASS}" \
+        php artisan db:seed --class=AdminUserSeeder --force
+    
+    log_success "Admin user seeded"
+}
+
+#=============================================================================
+# Laravel Setup
+#=============================================================================
 
 setup_laravel() {
     log_info "Running Laravel setup commands..."
@@ -65,7 +195,7 @@ setup_laravel() {
         log_info "Storage linked"
     fi
     
-    # Migrations
+    # Migrations (DB is already configured at this point)
     log_info "Running migrations..."
     php artisan migrate --force
     
@@ -78,34 +208,6 @@ setup_laravel() {
     php artisan route:cache
     
     log_success "Laravel configured!"
-}
-
-#=============================================================================
-# Directory Permissions
-#=============================================================================
-
-setup_permissions() {
-    log_info "Setting directory permissions..."
-    
-    cd "${APP_PATH}"
-    
-    # Set ownership
-    chown -R ${WEB_USER}:${WEB_USER} "${APP_PATH}"
-    
-    # Set directory permissions
-    find "${APP_PATH}" -type d -exec chmod 755 {} \;
-    
-    # Set file permissions
-    find "${APP_PATH}" -type f -exec chmod 644 {} \;
-    
-    # Make storage and cache writable
-    chmod -R 775 "${APP_PATH}/storage"
-    chmod -R 775 "${APP_PATH}/bootstrap/cache"
-    
-    # Ensure artisan is executable
-    chmod +x "${APP_PATH}/artisan"
-    
-    log_success "Permissions configured!"
 }
 
 #=============================================================================
@@ -220,6 +322,8 @@ setup_supervisor() {
     
     SUPERVISOR_CONF="/etc/supervisor/conf.d/${APP_NAME}-worker.conf"
     
+    # Supervisor runs the worker as the actual user (not www-data)
+    # since the files are owned by the actual user
     cat > "$SUPERVISOR_CONF" << EOF
 [program:${APP_NAME}-worker]
 process_name=%(program_name)s_%(process_num)02d
@@ -228,7 +332,7 @@ autostart=true
 autorestart=true
 stopasgroup=true
 killasgroup=true
-user=${WEB_USER}
+user=${ACTUAL_USER}
 numprocs=2
 redirect_stderr=true
 stdout_logfile=${APP_PATH}/storage/logs/worker.log
@@ -236,8 +340,8 @@ stopwaitsecs=3600
 EOF
 
     # Reload Supervisor
-    supervisorctl reread
-    supervisorctl update
+    supervisorctl reread 2>/dev/null || true
+    supervisorctl update 2>/dev/null || true
     supervisorctl start ${APP_NAME}-worker:* 2>/dev/null || true
     
     log_success "Supervisor configured!"
@@ -252,132 +356,15 @@ setup_cron() {
     
     CRON_CMD="* * * * * cd ${APP_PATH} && php artisan schedule:run >> /dev/null 2>&1"
     
-    # Add to crontab if not exists
-    (crontab -u ${WEB_USER} -l 2>/dev/null | grep -v "schedule:run"; echo "$CRON_CMD") | crontab -u ${WEB_USER} -
+    # Add to the actual user's crontab (not www-data) since files are owned by that user
+    (crontab -u ${ACTUAL_USER} -l 2>/dev/null | grep -v "schedule:run"; echo "$CRON_CMD") | crontab -u ${ACTUAL_USER} -
     
     log_success "Cron job configured!"
 }
 
 #=============================================================================
-# Main
+# Display Credentials
 #=============================================================================
-
-main() {
-    log_info "Starting configuration..."
-    
-    setup_env
-    setup_permissions
-    
-    # Database Setup
-    generate_credentials
-    setup_database
-    update_env_credentials
-    
-    # Admin User Setup
-    generate_admin_credentials
-    seed_admin_user
-    
-    
-    setup_laravel
-    setup_nginx
-    setup_php_fpm
-    setup_supervisor
-    setup_cron
-    
-    log_success "Configuration completed successfully!"
-    display_credentials
-}
-
-#=============================================================================
-# Database Configuration
-#=============================================================================
-
-DB_NAME="wujha_admin"
-DB_USER="wujha_user"
-DB_PASS=""
-
-generate_credentials() {
-    log_info "Generating database credentials..."
-    # Generate a random 32-character password
-    DB_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
-    log_success "Credentials generated"
-}
-
-setup_database() {
-    log_info "Setting up MySQL database..."
-    
-    # Check if mysql is available
-    if ! command -v mysql &> /dev/null; then
-        log_warning "MySQL client not found, skipping database creation"
-        return
-    fi
-    
-    # Create DB and User (Idempotent)
-    mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
-    mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';";
-    # If user exists, update password
-    mysql -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-    mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
-    mysql -e "FLUSH PRIVILEGES;"
-    
-    log_success "Database ${DB_NAME} and user ${DB_USER} configured"
-}
-
-update_env_credentials() {
-    log_info "Updating .env with new credentials..."
-    
-    cd "${APP_PATH}"
-    
-    # Update DB_DATABASE
-    if grep -q "^DB_DATABASE=" .env; then
-        sed -i "s/^DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
-    else
-        echo "DB_DATABASE=${DB_NAME}" >> .env
-    fi
-    
-    # Update DB_USERNAME
-    if grep -q "^DB_USERNAME=" .env; then
-        sed -i "s/^DB_USERNAME=.*/DB_USERNAME=${DB_USER}/" .env
-    else
-        echo "DB_USERNAME=${DB_USER}" >> .env
-    fi
-    
-    # Update DB_PASSWORD
-    if grep -q "^DB_PASSWORD=" .env; then
-        # Escape special characters in password for sed
-        ESCAPED_PASS=$(echo "${DB_PASS}" | sed 's/[\/&]/\\&/g')
-        sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=${ESCAPED_PASS}/" .env
-    else
-        echo "DB_PASSWORD=${DB_PASS}" >> .env
-    fi
-    
-    log_success ".env updated with database credentials"
-}
-
-#=============================================================================
-# Admin User Configuration
-#=============================================================================
-
-ADMIN_EMAIL="admin@wujha.com"
-ADMIN_PASS=""
-
-generate_admin_credentials() {
-    log_info "Generating admin user credentials..."
-    # Generate a random 12-character password
-    ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 12)
-    log_success "Admin credentials generated"
-}
-
-seed_admin_user() {
-    log_info "Seeding admin user..."
-    
-    cd "${APP_PATH}"
-    
-    # Run the AdminUserSeeder with environment variables
-    ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASS}" php artisan db:seed --class=AdminUserSeeder --force
-    
-    log_success "Admin user seeded"
-}
 
 display_credentials() {
     echo ""
@@ -395,8 +382,44 @@ display_credentials() {
     echo -e "App URL:        ${BLUE}http://${DOMAIN}${NC}"
     echo ""
     echo -e "${YELLOW}NOTE: These credentials have been saved to ${APP_PATH}/.env${NC}"
+    echo -e "${YELLOW}IMPORTANT: Change the admin password immediately after first login!${NC}"
     echo -e "${GREEN}================================================================${NC}"
     echo ""
+}
+
+#=============================================================================
+# Main
+#=============================================================================
+
+main() {
+    log_info "Starting configuration..."
+    
+    # 1. Environment Setup
+    setup_env
+    
+    # 2. Database Setup (BEFORE permissions so migrations can run)
+    generate_credentials
+    setup_database
+    update_env_credentials
+    
+    # 3. Laravel Setup (migrations, caches - DB is ready now)
+    setup_laravel
+    
+    # 4. Admin User Setup (after migrations created the users table)
+    generate_admin_credentials
+    seed_admin_user
+    
+    # 5. Permissions (after all artisan commands are done)
+    setup_permissions
+    
+    # 6. Web Server & Services
+    setup_nginx
+    setup_php_fpm
+    setup_supervisor
+    setup_cron
+    
+    log_success "Configuration completed successfully!"
+    display_credentials
 }
 
 main

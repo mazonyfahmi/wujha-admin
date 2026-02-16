@@ -24,6 +24,10 @@ PHP_VERSION="8.4"
 NODE_VERSION="20"
 export COMPOSER_ALLOW_SUPERUSER=1
 
+# Detect the actual system user (not root when using sudo)
+ACTUAL_USER="${SUDO_USER:-$(whoami)}"
+ACTUAL_GROUP="${ACTUAL_USER}"
+
 #=============================================================================
 # Helper Functions
 #=============================================================================
@@ -95,6 +99,62 @@ check_dependencies() {
 }
 
 #=============================================================================
+# Git Operations
+#=============================================================================
+
+fix_git_ownership() {
+    # Fix dubious ownership for running git as root on user-owned directories
+    git config --global --add safe.directory "${SCRIPT_DIR}" 2>/dev/null || true
+}
+
+pull_code() {
+    log_info "Pulling latest code from Git..."
+    
+    fix_git_ownership
+    
+    if [ -d "${SCRIPT_DIR}/.git" ]; then
+        git -C "${SCRIPT_DIR}" fetch origin
+        git -C "${SCRIPT_DIR}" reset --hard origin/main 2>/dev/null || \
+        git -C "${SCRIPT_DIR}" reset --hard origin/master 2>/dev/null || \
+        log_warning "Could not reset to remote branch"
+    else
+        log_warning "Not a git repository, skipping pull"
+    fi
+}
+
+#=============================================================================
+# File Permissions
+#=============================================================================
+
+fix_permissions() {
+    log_info "Fixing file permissions..."
+    
+    # The project lives inside a user home directory.
+    # Nginx (www-data) needs execute permission on all parent dirs to reach public/
+    local home_dir=$(dirname "${SCRIPT_DIR}")
+    chmod 755 "${home_dir}" 2>/dev/null || true
+    
+    # Set ownership: user owns the files, www-data group for web server access
+    chown -R ${ACTUAL_USER}:www-data "${SCRIPT_DIR}"
+    
+    # Set directory permissions (read+exec for group)
+    find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \;
+    
+    # Set file permissions (read for group)
+    find "${SCRIPT_DIR}" -type f -exec chmod 644 {} \;
+    
+    # Storage and cache: writable by both user and www-data
+    chmod -R 775 "${SCRIPT_DIR}/storage" "${SCRIPT_DIR}/bootstrap/cache"
+    
+    # Make scripts executable
+    chmod +x "${SCRIPT_DIR}/deploy.sh"
+    chmod +x "${SCRIPT_DIR}/artisan" 2>/dev/null || true
+    find "${SCRIPT_DIR}/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    
+    log_success "Permissions fixed!"
+}
+
+#=============================================================================
 # Main Deployment Steps
 #=============================================================================
 
@@ -123,9 +183,9 @@ install_dependencies() {
     log_info "Installing Composer dependencies..."
     composer install --no-dev --optimize-autoloader --no-interaction
     
-    # Install Node dependencies and build
+    # Install Node dependencies using npm install (not npm ci) to handle lock mismatches
     log_info "Installing Node.js dependencies..."
-    npm ci --production=false
+    npm install --production=false
     
     log_info "Building frontend assets..."
     npm run build
@@ -134,7 +194,8 @@ install_dependencies() {
 run_configure() {
     log_info "Running configuration script..."
     if [ -f "${SCRIPTS_DIR}/configure.sh" ]; then
-        bash "${SCRIPTS_DIR}/configure.sh"
+        # Pass the actual user so configure.sh can use it
+        ACTUAL_USER="${ACTUAL_USER}" bash "${SCRIPTS_DIR}/configure.sh"
     else
         log_error "configure.sh not found in ${SCRIPTS_DIR}"
         exit 1
@@ -153,13 +214,6 @@ deploy_application() {
     
     install_dependencies
     
-    # Laravel optimizations
-    log_info "Running Laravel optimizations..."
-    php artisan config:cache
-    php artisan route:cache
-    php artisan view:cache
-    php artisan event:cache
-    
     # Run migrations
     log_info "Running database migrations..."
     php artisan migrate --force
@@ -174,25 +228,21 @@ deploy_application() {
         php artisan storage:link
     fi
     
-    # Fix permissions
-    log_info "Fixing permissions..."
-    chown -R ${WEB_USER:-www-data}:${WEB_USER:-www-data} "${SCRIPT_DIR}"
-    find "${SCRIPT_DIR}" -type f -exec chmod 644 {} \;
-    find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \;
-    chmod -R 775 "${SCRIPT_DIR}/storage" "${SCRIPT_DIR}/bootstrap/cache"
-    chmod +x "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/scripts/"*.sh
+    # Fix permissions (user:www-data, NOT www-data:www-data)
+    fix_permissions
     
     # Restart services
     log_info "Restarting services..."
     if command -v systemctl &> /dev/null; then
         systemctl restart php${PHP_VERSION}-fpm 2>/dev/null || systemctl restart php-fpm 2>/dev/null || true
         systemctl restart nginx 2>/dev/null || systemctl restart httpd 2>/dev/null || true
-        systemctl restart supervisor 2>/dev/null || supervisorctl reread && supervisorctl update 2>/dev/null || true
+        supervisorctl reread 2>/dev/null || true
+        supervisorctl update 2>/dev/null || true
+        supervisorctl restart ${APP_NAME}-worker:* 2>/dev/null || true
     fi
     
     log_success "Deployment completed successfully!"
 }
-
 
 show_help() {
     echo "Usage: ./deploy.sh [OPTIONS]"
@@ -205,9 +255,9 @@ show_help() {
     echo "  --help        Show this help message"
     echo ""
     echo "Examples:"
-    echo "  ./deploy.sh              # Standard deployment"
-    echo "  ./deploy.sh --install    # First-time installation"
-    echo "  ./deploy.sh --rollback   # Rollback to previous version"
+    echo "  sudo ./deploy.sh              # Standard deployment (update)"
+    echo "  sudo ./deploy.sh --install    # First-time installation"
+    echo "  sudo ./deploy.sh --rollback   # Rollback to previous version"
 }
 
 #=============================================================================
@@ -223,13 +273,15 @@ main() {
     
     detect_os
     
+    # Fix git ownership immediately on startup
+    fix_git_ownership
+    
     case "${1:-deploy}" in
         --install)
             check_root
             run_install
             install_dependencies
             run_configure
-            deploy_application
             ;;
         --configure)
             check_root

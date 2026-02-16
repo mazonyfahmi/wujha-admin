@@ -14,9 +14,9 @@ class AdminUserSeeder extends Seeder
     public function run(): void
     {
         $email = env('ADMIN_EMAIL', 'admin@wujha.com');
-        $password = env('ADMIN_PASSWORD', 'password');
+        $password = env('ADMIN_PASSWORD', $this->generatePassword());
 
-        User::updateOrCreate(
+        $user = User::updateOrCreate(
             ['email' => $email],
             [
                 'name' => 'Super Admin',
@@ -26,5 +26,19 @@ class AdminUserSeeder extends Seeder
                 'phone' => '0000000000',
             ]
         );
+
+        // Display the password (useful when running from CLI)
+        $this->command->info('========================================');
+        $this->command->info("Admin user created with password: {$password}");
+        $this->command->info('Please change this password immediately!');
+        $this->command->info('========================================');
+    }
+
+    /**
+     * Generate a random password if none provided.
+     */
+    private function generatePassword(): string
+    {
+        return substr(str_shuffle('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 16);
     }
 }
