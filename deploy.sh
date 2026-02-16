@@ -20,7 +20,7 @@ SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
 
 # Configuration
 APP_NAME="wujha-admin"
-PHP_VERSION="8.2"
+PHP_VERSION="8.4"
 NODE_VERSION="20"
 export COMPOSER_ALLOW_SUPERUSER=1
 

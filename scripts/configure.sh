@@ -25,7 +25,7 @@ APP_PATH="${SCRIPT_DIR}"
 APP_NAME="wujha-admin"
 DOMAIN="${DOMAIN:-localhost}"
 WEB_USER="${WEB_USER:-www-data}"
-PHP_VERSION="8.2"
+PHP_VERSION="8.4"
 
 #=============================================================================
 # Environment Setup
