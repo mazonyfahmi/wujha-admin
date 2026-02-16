@@ -39,14 +39,18 @@ class HandleInertiaRequests extends Middleware
                 'error' => fn () => $request->session()->get('error'),
             ],
             'settings' => function () {
-                return [
-                    'store_name' => \App\Models\Setting::get('store_name', 'Wujha'),
-                    'store_currency' => \App\Models\Setting::get('store_currency', 'SDG'),
-                    'store_timezone' => \App\Models\Setting::get('store_timezone', 'Africa/Khartoum'),
-                    'maintenance_mode' => \App\Models\Setting::get('maintenance_mode', '0'),
-                    'default_language' => \App\Models\Setting::get('default_language', 'ar'),
-                    'dashboard_logo' => \App\Models\Setting::get('dashboard_logo'),
-                ];
+                try {
+                    return [
+                        'store_name' => \App\Models\Setting::get('store_name', 'Wujha'),
+                        'store_currency' => \App\Models\Setting::get('store_currency', 'SDG'),
+                        'store_timezone' => \App\Models\Setting::get('store_timezone', 'Africa/Khartoum'),
+                        'maintenance_mode' => \App\Models\Setting::get('maintenance_mode', '0'),
+                        'default_language' => \App\Models\Setting::get('default_language', 'ar'),
+                        'dashboard_logo' => \App\Models\Setting::get('dashboard_logo'),
+                    ];
+                } catch (\Exception $e) {
+                    return [];
+                }
             },
         ];
     }

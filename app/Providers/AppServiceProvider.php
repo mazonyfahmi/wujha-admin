@@ -26,17 +26,38 @@ class AppServiceProvider extends ServiceProvider
         Vite::prefetch(concurrency: 3);
 
         // Set Locale
-        \Illuminate\Support\Facades\App::setLocale(\App\Models\Setting::get('default_language', 'ar'));
+        if (!app()->runningInConsole()) {
+            try {
+                \Illuminate\Support\Facades\App::setLocale(\App\Models\Setting::get('default_language', 'ar'));
+            } catch (\Exception $e) {
+                // Fallback to default if DB not ready
+                \Illuminate\Support\Facades\App::setLocale('ar');
+            }
+        }
 
         // Password Defaults
         \Illuminate\Validation\Rules\Password::defaults(function () {
-            $rule = \Illuminate\Validation\Rules\Password::min((int) \App\Models\Setting::get('min_password_length', 8));
+            $minLength = 8;
+            $requireUppercase = true;
+            $requireNumbers = true;
+
+            if (!app()->runningInConsole()) {
+                try {
+                    $minLength = (int) \App\Models\Setting::get('min_password_length', 8);
+                    $requireUppercase = \App\Models\Setting::get('require_uppercase', '1') === '1';
+                    $requireNumbers = \App\Models\Setting::get('require_numbers', '1') === '1';
+                } catch (\Exception $e) {
+                    // Fallback to safe defaults
+                }
+            }
+
+            $rule = \Illuminate\Validation\Rules\Password::min($minLength);
             
-            if (\App\Models\Setting::get('require_uppercase', '1') === '1') {
+            if ($requireUppercase) {
                 $rule->mixedCase();
             }
             
-            if (\App\Models\Setting::get('require_numbers', '1') === '1') {
+            if ($requireNumbers) {
                 $rule->numbers();
             }
             
